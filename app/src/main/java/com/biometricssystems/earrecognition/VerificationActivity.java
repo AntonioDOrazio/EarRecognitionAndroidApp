@@ -127,7 +127,7 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
                 //tinyYolo = Dnn.readNetFromDarknet(tinyYoloCfg, tinyYoloWeights);
                 tinyYolo = Dnn.readNetFromONNX(yoloWeights);
                 firstTimeYolo = false;
-
+                Toast.makeText(this, "yolo initialized", Toast.LENGTH_SHORT).show();
             }
 
         } else {
@@ -169,6 +169,7 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
         cameraBridgeViewBase = (JavaCameraView) findViewById((R.id.CameraView));
         cameraBridgeViewBase.setVisibility(SurfaceView.VISIBLE);
         cameraBridgeViewBase.setCvCameraViewListener(this);
+        cameraBridgeViewBase.setCameraIndex(1);
 
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.CAMERA}, MY_CAMERA_REQUEST_CODE);
@@ -179,10 +180,6 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
         if (checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, MY_WRITE_STORAGE_REQUEST_CODE);
         }
-
-
-
-
 
         cameraBridgeViewBase.setCameraPermissionGranted();
         cameraBridgeViewBase.enableView();
@@ -200,10 +197,7 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
                 }
             }
         };
-
 */
-
-
         Button buttonYolo = (Button) findViewById(R.id.button2);
         buttonYolo.setOnClickListener(this::Yolo);
     }
@@ -223,24 +217,33 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
 
         Mat frame = inputFrame.rgba();
         if (isNotMoving(frame.clone())) {
+            System.out.println("EarRecognition: not moving");
         //if(true){
 
             if (startYolo){
+                System.out.println("EarRecognition: yolo is processing");
+
+                // rotate image since we use portrait mode
+                int[] targetSize = {frame.size(1), frame.size(0)};
+                Mat tImg = new Mat(targetSize, frame.type());
+                Core.transpose(frame, tImg);
+                Core.flip(tImg, frame, 0);
+
                 Mat grayFrame = frame.clone();
-                int numcols = frame.cols();
-                int numrows = frame.rows();
+
+                Imgproc.cvtColor(grayFrame, grayFrame, Imgproc.COLOR_RGBA2GRAY);
+                Imgproc.cvtColor(grayFrame, grayFrame, Imgproc.COLOR_GRAY2RGB);
+
+                int numcols = grayFrame.cols();
+                int numrows = grayFrame.rows();
                 int _max = Math.max(numcols, numrows);
 
                 Mat resized = Mat.zeros(_max, _max, 3);
                 //resized.colRange(0, numcols) = frame.colRange(0,numcols);
                 //resized.rowRange(0, numrows) = frame.rowRange(0,numcols);
 
-                float x_factor = ((float) frame.width() )/ (float) 640.0;
-                float y_factor = ((float) frame.height() )/ (float) 640.0;;
+                //Imgproc.cvtColor(frame, frame, Imgproc.COLOR_RGBA2RGB);
 
-                Imgproc.cvtColor(frame, frame, Imgproc.COLOR_RGBA2RGB);
-                Imgproc.cvtColor(grayFrame, grayFrame, Imgproc.COLOR_RGBA2GRAY);
-                Imgproc.cvtColor(grayFrame, grayFrame, Imgproc.COLOR_GRAY2RGB);
                 //Core.flip(frame, frame, );
                 Mat imageBlob = Dnn.blobFromImage(grayFrame,
                         1./(255),
@@ -257,18 +260,17 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
 
                 outBlobNames.add(0, "output");
 
-
                 tinyYolo.forward(result, outBlobNames);
                 Mat res = result.get(0);
 
                 res = res.reshape(1, 25200);
 
-
                 List<Integer> clsIds = new ArrayList<>();
                 List<Float> confs = new ArrayList<>();
                 List<Rect2d> rects = new ArrayList<>();
 
-
+                float x_factor = ((float) frame.width() )/ (float) 640.0;
+                float y_factor = ((float) frame.height())/ (float) 640.0;
 
                 for (int j=0; j<25200;j++) {
 
@@ -279,7 +281,6 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
 
                     float confidence = (float) (row.get(0,4)[0]);
                     Point classIdPoint = minMaxLocResult.maxLoc;
-
 
                     if (confidence > 0.85) {
 
@@ -329,10 +330,10 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
 
                             List<String> labelNames = Arrays.asList("LeftEar", "RightEar");
                             String intConf = new Integer((int) (conf * 100)).toString();
-
-                            Imgproc.putText(frame, labelNames.get(idGuy) + intConf + "%", box.tl(), Imgproc.FONT_HERSHEY_SIMPLEX, 2, new Scalar(255, 255, 0), 2);
-                            Imgproc.rectangle(frame, box.tl(), box.br(), new Scalar(50, 1778, 255), 2);
-
+                            Imgproc.cvtColor(frame, frame, Imgproc.COLOR_RGBA2BGR);
+                            Imgproc.putText(frame, labelNames.get(idGuy) + intConf + "%", box.tl(), Imgproc.FONT_HERSHEY_SIMPLEX, 1, new Scalar(255, 0, 240), 2);
+                            Imgproc.rectangle(frame, box.br(), box.tl(), new Scalar(0, 255, 0), 2);
+                            Imgproc.cvtColor(frame, frame, Imgproc.COLOR_BGR2RGBA);
                         }
 
 
@@ -356,7 +357,13 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
                 //Imgproc.blur(frame, frame, new Size(3,3));
                 //Imgproc.Canny(frame, frame, 100, 80); // canny edge detection
  */
+                // rotate again
+                targetSize[0] = frame.size(1);
+                targetSize[1] = frame.size(0);
 
+                tImg = new Mat(targetSize, frame.type());
+                Core.transpose(frame, tImg);
+                Core.flip(tImg, frame, 1);
             }
 
 
