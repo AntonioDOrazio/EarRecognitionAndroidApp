@@ -111,9 +111,6 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
         if (!startYolo) {
             startYolo = true;
             if (firstTimeYolo) {
-
-                //MatOfByte tinyYoloCfg = new MatOfByte();
-                //MatOfByte tinyYoloWeights = new MatOfByte();
                 MatOfByte yoloWeights = new MatOfByte();
                 try {
                     //tinyYoloCfg.fromArray(loadTextFromAssets("yolov3-tiny.cfg", null));
