@@ -7,7 +7,10 @@ import android.Manifest;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.content.res.Resources;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Color;
 import android.os.Bundle;
 import android.os.Handler;
 import android.util.Log;
@@ -69,6 +72,7 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
 
     boolean startYolo = false;
     boolean firstTimeYolo = true;
+    boolean frozenCapture;
     boolean verificationSuccess = false;
     Net tinyYolo;
     Model feat_extractor;
@@ -77,9 +81,11 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
     ArrayList<double[]> templates = null;
 
     Mat oldFrame; // Initialization is later in the code
+    Mat frozenFrame;
     private double similarityAchieved;
 
     TextView verifTitle;
+    Button yoloBtn;
 
     private byte[] loadTextFromAssets(String assetsPath, Charset charset) throws IOException {
         InputStream is = getAssets().open(assetsPath);
@@ -136,9 +142,10 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
     }
 
     private void Yolo(View button) {
-
         if (!startYolo) {
             startYolo = true;
+            frozenCapture = false;
+            yoloBtn.setText("Stop");
             if (firstTimeYolo) {
                 MatOfByte yoloWeights = new MatOfByte();
                 try {
@@ -156,6 +163,7 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
 
         } else {
             startYolo = false;
+            yoloBtn.setText("Start");
         }
     }
 
@@ -205,6 +213,7 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
         cameraBridgeViewBase.setCvCameraViewListener(this);
         cameraBridgeViewBase.setCameraIndex(1);
         sharedPrefs = getSharedPreferences(getString(R.string.app_name), Context.MODE_PRIVATE);
+        yoloBtn = (Button) findViewById(R.id.button2);
 
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.CAMERA}, MY_CAMERA_REQUEST_CODE);
@@ -220,10 +229,10 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
         cameraBridgeViewBase.enableView();
         verifTitle = findViewById(R.id.titleVerification);
 
-        Button buttonYolo = (Button) findViewById(R.id.button2);
-        buttonYolo.setOnClickListener(this::Yolo);
+        yoloBtn.setOnClickListener(this::Yolo);
 
         templates = retrieveTemplates();
+        frozenCapture = false;
     }
 
     @Override
@@ -239,134 +248,148 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
     @Override
     public Mat onCameraFrame(CameraBridgeViewBase.CvCameraViewFrame inputFrame) {
         Mat frame = inputFrame.rgba();
-        if (isNotMoving(frame.clone())) {
+        if (!frozenCapture && startYolo && isNotMoving(frame.clone())) {
             System.out.println("EarRecognition: not moving");
             frame = performYoloDetection(frame);
+            if(frozenCapture) {
+                startYolo = false;
+                frozenFrame = frame.clone();
+                handler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        yoloBtn.setText("Repeat");
+                    }
+                });
+            }
         }
-
-        return frame;
+        if(frozenCapture) {
+            Bitmap temp = Bitmap.createBitmap(frame.width(), frame.height(), Bitmap.Config.ARGB_8888);
+            Utils.matToBitmap(frozenFrame, temp);
+            return frozenFrame;
+        }
+        else
+            return frame;
     }
 
     private Mat performYoloDetection(Mat frame) {
-        if (startYolo){
-            System.out.println("EarRecognition: yolo is processing");
+        System.out.println("EarRecognition: yolo is processing");
 
-            // rotate image since we use portrait mode
-            int[] targetSize = {frame.size(1), frame.size(0)};
-            Mat tImg = new Mat(targetSize, frame.type());
-            Core.transpose(frame, tImg);
-            Core.flip(tImg, frame, 0);
+        // rotate image since we use portrait mode
+        int[] targetSize = {frame.size(1), frame.size(0)};
+        Mat tImg = new Mat(targetSize, frame.type());
+        Core.transpose(frame, tImg);
+        Core.flip(tImg, frame, 0);
 
-            Mat grayFrame = frame.clone();
+        Mat grayFrame = frame.clone();
 
-            Imgproc.cvtColor(grayFrame, grayFrame, Imgproc.COLOR_RGBA2GRAY);
-            Imgproc.cvtColor(grayFrame, grayFrame, Imgproc.COLOR_GRAY2RGB);
+        Imgproc.cvtColor(grayFrame, grayFrame, Imgproc.COLOR_RGBA2GRAY);
+        Imgproc.cvtColor(grayFrame, grayFrame, Imgproc.COLOR_GRAY2RGB);
 
-            Mat imageBlob = Dnn.blobFromImage(grayFrame,
-                    1./(255),
-                    new Size(640, 640),
-                    new Scalar(0,0,0),
-                    false // In case input is BGR, set it to true
-            );
+        Mat imageBlob = Dnn.blobFromImage(grayFrame,
+                1./(255),
+                new Size(640, 640),
+                new Scalar(0,0,0),
+                false // In case input is BGR, set it to true
+        );
 
-            tinyYolo.setInput(imageBlob);
+        tinyYolo.setInput(imageBlob);
 
-            List<Mat> result = new ArrayList<Mat>(2);
+        List<Mat> result = new ArrayList<Mat>(2);
 
-            List<String> outBlobNames = new ArrayList<>();
+        List<String> outBlobNames = new ArrayList<>();
 
-            outBlobNames.add(0, "output");
+        outBlobNames.add(0, "output");
 
-            tinyYolo.forward(result, outBlobNames);
-            Mat res = result.get(0);
+        tinyYolo.forward(result, outBlobNames);
+        Mat res = result.get(0);
 
-            res = res.reshape(1, 25200);
+        res = res.reshape(1, 25200);
 
-            List<Integer> clsIds = new ArrayList<>();
-            List<Float> confs = new ArrayList<>();
-            List<Rect2d> rects = new ArrayList<>();
+        List<Integer> clsIds = new ArrayList<>();
+        List<Float> confs = new ArrayList<>();
+        List<Rect2d> rects = new ArrayList<>();
 
-            float x_factor = ((float) frame.width() )/ (float) 640.0;
-            float y_factor = ((float) frame.height())/ (float) 640.0;
+        float x_factor = ((float) frame.width() )/ (float) 640.0;
+        float y_factor = ((float) frame.height())/ (float) 640.0;
 
-            for (int j=0; j<25200;j++) {
+        for (int j=0; j<25200;j++) {
 
-                Mat row = res.row(j);
+            Mat row = res.row(j);
 
-                //Mat classes_scores = row.colRange(5, res.cols());
-                Core.MinMaxLocResult minMaxLocResult = Core.minMaxLoc(row.colRange(5, 7));
+            //Mat classes_scores = row.colRange(5, res.cols());
+            Core.MinMaxLocResult minMaxLocResult = Core.minMaxLoc(row.colRange(5, 7));
 
-                float confidence = (float) (row.get(0,4)[0]);
-                Point classIdPoint = minMaxLocResult.maxLoc;
+            float confidence = (float) (row.get(0,4)[0]);
+            Point classIdPoint = minMaxLocResult.maxLoc;
 
-                if (confidence > 0.85) {
+            if (confidence > 0.85) {
 
-                    int x = (int) (row.get(0,0)[0]);
-                    int y = (int) (row.get(0,1)[0]);
-                    int w   = (int) (row.get(0,2)[0]);
-                    int h  = (int) (row.get(0,3)[0]);
+                int x = (int) (row.get(0,0)[0]);
+                int y = (int) (row.get(0,1)[0]);
+                int w   = (int) (row.get(0,2)[0]);
+                int h  = (int) (row.get(0,3)[0]);
 
-                    int left = (int) ((x - 0.5 * w ) * x_factor);
-                    int top = (int) ((y-0.5*h) * y_factor);
-                    int width = (int) (w * x_factor);
-                    int height = (int) (h * y_factor);
+                int left = (int) ((x - 0.5 * w ) * x_factor);
+                int top = (int) ((y-0.5*h) * y_factor);
+                int width = (int) (w * x_factor);
+                int height = (int) (h * y_factor);
 
-                    Rect roi = new Rect(left, top, width, height);
-                    Mat crop = new Mat(frame, roi);
-                    croppedEar = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
-                    Utils.matToBitmap(crop, croppedEar);
+                Rect roi = new Rect(left, top, width, height);
+                Mat crop = new Mat(frame, roi);
+                croppedEar = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+                Utils.matToBitmap(crop, croppedEar);
 
-                    clsIds.add((int)classIdPoint.x);
-                    confs.add((float) confidence);
-                    Rect2d box = new Rect2d(left, top, width, height);
-                    rects.add(box);
-                    System.out.println("Predicted " + classIdPoint.x + " confidence " + confidence);
-                }
+                clsIds.add((int)classIdPoint.x);
+                confs.add((float) confidence);
+                Rect2d box = new Rect2d(left, top, width, height);
+                rects.add(box);
+                System.out.println("Predicted " + classIdPoint.x + " confidence " + confidence);
             }
-
-            if (confs.size() > 0) {
-                MatOfFloat confidences = new MatOfFloat(Converters.vector_float_to_Mat(confs));
-                Rect2d[] boxesArray = rects.toArray(new Rect2d[0]);
-                MatOfRect2d boxes = new MatOfRect2d();
-                boxes.fromList(rects);
-                MatOfInt indices = new MatOfInt();
-                float nmsThresh = 0.2f;
-
-                Dnn.NMSBoxes(boxes, confidences, (float)  0.25, (float) 0.45, indices);
-
-                int[] ind = indices.toArray();
-                float max_conf = -1;
-                for (int i = 0; i <ind.length; i++) {
-                    float conf = confs.get(ind[i]);
-                    if (conf > max_conf) max_conf = conf;
-                }
-
-                for (int i = 0; i < ind.length; i++) {
-                    int idx = ind[i];
-                    Rect2d box = boxesArray[idx];
-                    int idGuy = clsIds.get(idx);
-
-                    float conf = confs.get(idx);
-                    if (conf == max_conf) {
-
-                        List<String> labelNames = Arrays.asList("LeftEar", "RightEar");
-                        String intConf = new Integer((int) (conf * 100)).toString();
-                        Imgproc.cvtColor(frame, frame, Imgproc.COLOR_RGBA2BGR);
-                        Imgproc.putText(frame, labelNames.get(idGuy) + intConf + "%", box.tl(), Imgproc.FONT_HERSHEY_SIMPLEX, 1, new Scalar(255, 0, 240), 2);
-                        Imgproc.rectangle(frame, box.br(), box.tl(), new Scalar(0, 255, 0), 2);
-                        Imgproc.cvtColor(frame, frame, Imgproc.COLOR_BGR2RGBA);
-                    }
-                }
-            }
-
-            // rotate again
-            targetSize[0] = frame.size(1);
-            targetSize[1] = frame.size(0);
-
-            tImg = new Mat(targetSize, frame.type());
-            Core.transpose(frame, tImg);
-            Core.flip(tImg, frame, 1);
         }
+
+        if (confs.size() > 0) {
+            MatOfFloat confidences = new MatOfFloat(Converters.vector_float_to_Mat(confs));
+            Rect2d[] boxesArray = rects.toArray(new Rect2d[0]);
+            MatOfRect2d boxes = new MatOfRect2d();
+            boxes.fromList(rects);
+            MatOfInt indices = new MatOfInt();
+            float nmsThresh = 0.2f;
+
+            Dnn.NMSBoxes(boxes, confidences, (float)  0.25, (float) 0.45, indices);
+
+            int[] ind = indices.toArray();
+            float max_conf = -1;
+            for (int i = 0; i <ind.length; i++) {
+                float conf = confs.get(ind[i]);
+                if (conf > max_conf) max_conf = conf;
+            }
+
+            for (int i = 0; i < ind.length; i++) {
+                int idx = ind[i];
+                Rect2d box = boxesArray[idx];
+                int idGuy = clsIds.get(idx);
+
+                float conf = confs.get(idx);
+                if (conf == max_conf) {
+                    // ear detected
+                    frozenCapture = true;
+                    List<String> labelNames = Arrays.asList("LeftEar", "RightEar");
+                    String intConf = new Integer((int) (conf * 100)).toString();
+                    Imgproc.cvtColor(frame, frame, Imgproc.COLOR_RGBA2BGR);
+                    Imgproc.putText(frame, labelNames.get(idGuy) + intConf + "%", box.tl(), Imgproc.FONT_HERSHEY_SIMPLEX, 1, new Scalar(255, 0, 240), 2);
+                    Imgproc.rectangle(frame, box.br(), box.tl(), new Scalar(0, 255, 0), 2);
+                    Imgproc.cvtColor(frame, frame, Imgproc.COLOR_BGR2RGBA);
+                }
+            }
+        }
+
+        // rotate again
+        targetSize[0] = frame.size(1);
+        targetSize[1] = frame.size(0);
+
+        tImg = new Mat(targetSize, frame.type());
+        Core.transpose(frame, tImg);
+        Core.flip(tImg, frame, 1);
         return frame;
     }
 
@@ -420,10 +443,12 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
             verificationSuccess = true;
             similarityAchieved = maxSimilarity;
             verifTitle.setText("Success, " + maxSimilarity);
+            verifTitle.setTextColor(getColor(R.color.success));
         }
         else {
             verificationSuccess = false;
             verifTitle.setText("Failed, " + maxSimilarity);
+            verifTitle.setTextColor(getColor(R.color.failure));
         }
     }
 
