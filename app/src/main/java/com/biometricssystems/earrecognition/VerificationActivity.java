@@ -4,26 +4,40 @@ import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 
 import android.Manifest;
+import android.content.Context;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
 import android.os.Bundle;
+import android.os.Handler;
 import android.util.Log;
 import android.view.SurfaceView;
 import android.view.View;
 import android.widget.Button;
+import android.widget.TextView;
 import android.widget.Toast;
 
+import com.biometricssystems.earrecognition.ml.Model;
+
+import org.apache.commons.math3.linear.RealMatrix;
+import org.apache.commons.math3.stat.correlation.PearsonsCorrelation;
+import org.apache.commons.math3.util.MathArrays;
+import org.apache.commons.math3.util.MathUtils;
 import org.opencv.android.BaseLoaderCallback;
 import org.opencv.android.CameraBridgeViewBase;
 import org.opencv.android.JavaCameraView;
 import org.opencv.android.OpenCVLoader;
+import org.opencv.android.Utils;
 import org.opencv.core.Core;
 import org.opencv.core.Mat;
 import org.opencv.core.MatOfByte;
+import org.opencv.core.MatOfDouble;
 import org.opencv.core.MatOfFloat;
 import org.opencv.core.MatOfInt;
 import org.opencv.core.MatOfPoint;
 import org.opencv.core.MatOfRect2d;
 import org.opencv.core.Point;
+import org.opencv.core.Rect;
 import org.opencv.core.Rect2d;
 import org.opencv.core.Scalar;
 import org.opencv.core.Size;
@@ -31,6 +45,11 @@ import org.opencv.dnn.Net;
 import org.opencv.imgproc.Imgproc;
 import org.opencv.dnn.Dnn;
 import org.opencv.utils.Converters;
+import org.tensorflow.lite.DataType;
+import org.tensorflow.lite.support.common.ops.NormalizeOp;
+import org.tensorflow.lite.support.image.ImageProcessor;
+import org.tensorflow.lite.support.image.TensorImage;
+import org.tensorflow.lite.support.image.ops.ResizeOp;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -39,18 +58,28 @@ import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 
 public class VerificationActivity extends AppCompatActivity implements CameraBridgeViewBase.CvCameraViewListener2 {
 
     CameraBridgeViewBase cameraBridgeViewBase;
-    BaseLoaderCallback baseLoaderCallback;
+    SharedPreferences sharedPrefs=null;
+
+    public static Handler handler = new Handler();
 
     boolean startYolo = false;
     boolean firstTimeYolo = true;
-    int totFrames = 0;
+    boolean verificationSuccess = false;
     Net tinyYolo;
+    Model feat_extractor;
+    Bitmap croppedEar = null;
+    double THRESHOLD = 0.98;
+    ArrayList<double[]> templates = null;
 
     Mat oldFrame; // Initialization is later in the code
+    private double similarityAchieved;
+
+    TextView verifTitle;
 
     private byte[] loadTextFromAssets(String assetsPath, Charset charset) throws IOException {
         InputStream is = getAssets().open(assetsPath);
@@ -106,29 +135,38 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
 
     }
 
-    public void Yolo(View button) {
+    private void Yolo(View button) {
 
         if (!startYolo) {
             startYolo = true;
             if (firstTimeYolo) {
                 MatOfByte yoloWeights = new MatOfByte();
                 try {
-                    //tinyYoloCfg.fromArray(loadTextFromAssets("yolov3-tiny.cfg", null));
-                    //tinyYoloWeights.fromArray(loadTextFromAssets("yolov3-tiny.weights", null));
                     yoloWeights.fromArray(loadTextFromAssets("ears.onnx", null));
                 } catch (IOException e) {
                     e.printStackTrace();
                 }
 
-
-                //tinyYolo = Dnn.readNetFromDarknet(tinyYoloCfg, tinyYoloWeights);
                 tinyYolo = Dnn.readNetFromONNX(yoloWeights);
                 firstTimeYolo = false;
                 Toast.makeText(this, "yolo initialized", Toast.LENGTH_SHORT).show();
+
+                initFeatureExtractor();
             }
 
         } else {
             startYolo = false;
+        }
+    }
+
+    private void initFeatureExtractor() {
+        if(feat_extractor == null) {
+            try {
+                feat_extractor = Model.newInstance(this);
+            } catch (IOException e) {
+                // TODO Handle the exception
+            }
+            Toast.makeText(this, "EarRecognition: feature extractor initialized", Toast.LENGTH_LONG).show();
         }
     }
 
@@ -162,11 +200,11 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
             // load your library and do initializing stuffs like System.loadLibrary();
         }
 
-
         cameraBridgeViewBase = (JavaCameraView) findViewById((R.id.CameraView));
         cameraBridgeViewBase.setVisibility(SurfaceView.VISIBLE);
         cameraBridgeViewBase.setCvCameraViewListener(this);
         cameraBridgeViewBase.setCameraIndex(1);
+        sharedPrefs = getSharedPreferences(getString(R.string.app_name), Context.MODE_PRIVATE);
 
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.CAMERA}, MY_CAMERA_REQUEST_CODE);
@@ -180,23 +218,12 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
 
         cameraBridgeViewBase.setCameraPermissionGranted();
         cameraBridgeViewBase.enableView();
-/*
-        baseLoaderCallback = new BaseLoaderCallback(this) {
-            @Override
-            public void onManagerConnected(int status) {
-                super.onManagerConnected(status);
-                switch(status) {
-                    case BaseLoaderCallback.SUCCESS:
-                        break;
-                    default:
-                        super.onManagerConnected(status);
-                        break;
-                }
-            }
-        };
-*/
+        verifTitle = findViewById(R.id.titleVerification);
+
         Button buttonYolo = (Button) findViewById(R.id.button2);
         buttonYolo.setOnClickListener(this::Yolo);
+
+        templates = retrieveTemplates();
     }
 
     @Override
@@ -211,166 +238,234 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
 
     @Override
     public Mat onCameraFrame(CameraBridgeViewBase.CvCameraViewFrame inputFrame) {
-
         Mat frame = inputFrame.rgba();
         if (isNotMoving(frame.clone())) {
             System.out.println("EarRecognition: not moving");
-        //if(true){
-
-            if (startYolo){
-                System.out.println("EarRecognition: yolo is processing");
-
-                // rotate image since we use portrait mode
-                int[] targetSize = {frame.size(1), frame.size(0)};
-                Mat tImg = new Mat(targetSize, frame.type());
-                Core.transpose(frame, tImg);
-                Core.flip(tImg, frame, 0);
-
-                Mat grayFrame = frame.clone();
-
-                Imgproc.cvtColor(grayFrame, grayFrame, Imgproc.COLOR_RGBA2GRAY);
-                Imgproc.cvtColor(grayFrame, grayFrame, Imgproc.COLOR_GRAY2RGB);
-
-                int numcols = grayFrame.cols();
-                int numrows = grayFrame.rows();
-                int _max = Math.max(numcols, numrows);
-
-                Mat resized = Mat.zeros(_max, _max, 3);
-                //resized.colRange(0, numcols) = frame.colRange(0,numcols);
-                //resized.rowRange(0, numrows) = frame.rowRange(0,numcols);
-
-                //Imgproc.cvtColor(frame, frame, Imgproc.COLOR_RGBA2RGB);
-
-                //Core.flip(frame, frame, );
-                Mat imageBlob = Dnn.blobFromImage(grayFrame,
-                        1./(255),
-                        new Size(640, 640),
-                        new Scalar(0,0,0),
-                        false // In case input is BGR, set it to true
-                );
-
-                tinyYolo.setInput(imageBlob);
-
-                List<Mat> result = new ArrayList<Mat>(2);
-
-                List<String> outBlobNames = new ArrayList<>();
-
-                outBlobNames.add(0, "output");
-
-                tinyYolo.forward(result, outBlobNames);
-                Mat res = result.get(0);
-
-                res = res.reshape(1, 25200);
-
-                List<Integer> clsIds = new ArrayList<>();
-                List<Float> confs = new ArrayList<>();
-                List<Rect2d> rects = new ArrayList<>();
-
-                float x_factor = ((float) frame.width() )/ (float) 640.0;
-                float y_factor = ((float) frame.height())/ (float) 640.0;
-
-                for (int j=0; j<25200;j++) {
-
-                    Mat row = res.row(j);
-
-                    //Mat classes_scores = row.colRange(5, res.cols());
-                    Core.MinMaxLocResult minMaxLocResult = Core.minMaxLoc(row.colRange(5, 7));
-
-                    float confidence = (float) (row.get(0,4)[0]);
-                    Point classIdPoint = minMaxLocResult.maxLoc;
-
-                    if (confidence > 0.85) {
-
-                        int x = (int) (row.get(0,0)[0]);
-                        int y = (int) (row.get(0,1)[0]);
-                        int w   = (int) (row.get(0,2)[0]);
-                        int h  = (int) (row.get(0,3)[0]);
-
-                        int left = (int) ((x - 0.5 * w ) * x_factor);
-                        int top = (int) ((y-0.5*h) * y_factor);
-                        int width = (int) (w * x_factor);
-                        int height = (int) (h * y_factor);
-
-
-                        clsIds.add((int)classIdPoint.x);
-                        confs.add((float) confidence);
-                        Rect2d box = new Rect2d(left, top, width, height);
-                        rects.add(box);
-                        System.out.println("Predicted " + classIdPoint.x + " confidence " + confidence);
-                    }
-                }
-
-                if (confs.size() > 0) {
-                    MatOfFloat confidences = new MatOfFloat(Converters.vector_float_to_Mat(confs));
-                    Rect2d[] boxesArray = rects.toArray(new Rect2d[0]);
-                    MatOfRect2d boxes = new MatOfRect2d();
-                    boxes.fromList(rects);
-                    MatOfInt indices = new MatOfInt();
-                    float nmsThresh = 0.2f;
-
-                    Dnn.NMSBoxes(boxes, confidences, (float)  0.25, (float) 0.45, indices);
-
-                    int[] ind = indices.toArray();
-                    float max_conf = -1;
-                    for (int i = 0; i <ind.length; i++) {
-                        float conf = confs.get(ind[i]);
-                        if (conf > max_conf) max_conf = conf;
-                    }
-
-                    for (int i = 0; i < ind.length; i++) {
-                        int idx = ind[i];
-                        Rect2d box = boxesArray[idx];
-                        int idGuy = clsIds.get(idx);
-
-                        float conf = confs.get(idx);
-                        if (conf == max_conf) {
-
-                            List<String> labelNames = Arrays.asList("LeftEar", "RightEar");
-                            String intConf = new Integer((int) (conf * 100)).toString();
-                            Imgproc.cvtColor(frame, frame, Imgproc.COLOR_RGBA2BGR);
-                            Imgproc.putText(frame, labelNames.get(idGuy) + intConf + "%", box.tl(), Imgproc.FONT_HERSHEY_SIMPLEX, 1, new Scalar(255, 0, 240), 2);
-                            Imgproc.rectangle(frame, box.br(), box.tl(), new Scalar(0, 255, 0), 2);
-                            Imgproc.cvtColor(frame, frame, Imgproc.COLOR_BGR2RGBA);
-                        }
-
-
-                    }
-                }
-
-/*
-
-                int ArrayLength = confs.size();
-                if (ArrayLength >= 1) {
-                    // Apply non maximum suppression procedure
-
-
-
-
-                    }
-
-                }
-
-                //Imgproc.cvtColor(frame, frame, Imgproc.COLOR_RGBA2GRAY);
-                //Imgproc.blur(frame, frame, new Size(3,3));
-                //Imgproc.Canny(frame, frame, 100, 80); // canny edge detection
- */
-                // rotate again
-                targetSize[0] = frame.size(1);
-                targetSize[1] = frame.size(0);
-
-                tImg = new Mat(targetSize, frame.type());
-                Core.transpose(frame, tImg);
-                Core.flip(tImg, frame, 1);
-            }
-
-
+            frame = performYoloDetection(frame);
         }
 
-
-        // if (startYolo && totFrames % 3 == 0) {
-
-        totFrames++;
         return frame;
+    }
+
+    private Mat performYoloDetection(Mat frame) {
+        if (startYolo){
+            System.out.println("EarRecognition: yolo is processing");
+
+            // rotate image since we use portrait mode
+            int[] targetSize = {frame.size(1), frame.size(0)};
+            Mat tImg = new Mat(targetSize, frame.type());
+            Core.transpose(frame, tImg);
+            Core.flip(tImg, frame, 0);
+
+            Mat grayFrame = frame.clone();
+
+            Imgproc.cvtColor(grayFrame, grayFrame, Imgproc.COLOR_RGBA2GRAY);
+            Imgproc.cvtColor(grayFrame, grayFrame, Imgproc.COLOR_GRAY2RGB);
+
+            Mat imageBlob = Dnn.blobFromImage(grayFrame,
+                    1./(255),
+                    new Size(640, 640),
+                    new Scalar(0,0,0),
+                    false // In case input is BGR, set it to true
+            );
+
+            tinyYolo.setInput(imageBlob);
+
+            List<Mat> result = new ArrayList<Mat>(2);
+
+            List<String> outBlobNames = new ArrayList<>();
+
+            outBlobNames.add(0, "output");
+
+            tinyYolo.forward(result, outBlobNames);
+            Mat res = result.get(0);
+
+            res = res.reshape(1, 25200);
+
+            List<Integer> clsIds = new ArrayList<>();
+            List<Float> confs = new ArrayList<>();
+            List<Rect2d> rects = new ArrayList<>();
+
+            float x_factor = ((float) frame.width() )/ (float) 640.0;
+            float y_factor = ((float) frame.height())/ (float) 640.0;
+
+            for (int j=0; j<25200;j++) {
+
+                Mat row = res.row(j);
+
+                //Mat classes_scores = row.colRange(5, res.cols());
+                Core.MinMaxLocResult minMaxLocResult = Core.minMaxLoc(row.colRange(5, 7));
+
+                float confidence = (float) (row.get(0,4)[0]);
+                Point classIdPoint = minMaxLocResult.maxLoc;
+
+                if (confidence > 0.85) {
+
+                    int x = (int) (row.get(0,0)[0]);
+                    int y = (int) (row.get(0,1)[0]);
+                    int w   = (int) (row.get(0,2)[0]);
+                    int h  = (int) (row.get(0,3)[0]);
+
+                    int left = (int) ((x - 0.5 * w ) * x_factor);
+                    int top = (int) ((y-0.5*h) * y_factor);
+                    int width = (int) (w * x_factor);
+                    int height = (int) (h * y_factor);
+
+                    Rect roi = new Rect(left, top, width, height);
+                    Mat crop = new Mat(frame, roi);
+                    croppedEar = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+                    Utils.matToBitmap(crop, croppedEar);
+
+                    clsIds.add((int)classIdPoint.x);
+                    confs.add((float) confidence);
+                    Rect2d box = new Rect2d(left, top, width, height);
+                    rects.add(box);
+                    System.out.println("Predicted " + classIdPoint.x + " confidence " + confidence);
+                }
+            }
+
+            if (confs.size() > 0) {
+                MatOfFloat confidences = new MatOfFloat(Converters.vector_float_to_Mat(confs));
+                Rect2d[] boxesArray = rects.toArray(new Rect2d[0]);
+                MatOfRect2d boxes = new MatOfRect2d();
+                boxes.fromList(rects);
+                MatOfInt indices = new MatOfInt();
+                float nmsThresh = 0.2f;
+
+                Dnn.NMSBoxes(boxes, confidences, (float)  0.25, (float) 0.45, indices);
+
+                int[] ind = indices.toArray();
+                float max_conf = -1;
+                for (int i = 0; i <ind.length; i++) {
+                    float conf = confs.get(ind[i]);
+                    if (conf > max_conf) max_conf = conf;
+                }
+
+                for (int i = 0; i < ind.length; i++) {
+                    int idx = ind[i];
+                    Rect2d box = boxesArray[idx];
+                    int idGuy = clsIds.get(idx);
+
+                    float conf = confs.get(idx);
+                    if (conf == max_conf) {
+
+                        List<String> labelNames = Arrays.asList("LeftEar", "RightEar");
+                        String intConf = new Integer((int) (conf * 100)).toString();
+                        Imgproc.cvtColor(frame, frame, Imgproc.COLOR_RGBA2BGR);
+                        Imgproc.putText(frame, labelNames.get(idGuy) + intConf + "%", box.tl(), Imgproc.FONT_HERSHEY_SIMPLEX, 1, new Scalar(255, 0, 240), 2);
+                        Imgproc.rectangle(frame, box.br(), box.tl(), new Scalar(0, 255, 0), 2);
+                        Imgproc.cvtColor(frame, frame, Imgproc.COLOR_BGR2RGBA);
+                    }
+                }
+            }
+
+            // rotate again
+            targetSize[0] = frame.size(1);
+            targetSize[1] = frame.size(0);
+
+            tImg = new Mat(targetSize, frame.type());
+            Core.transpose(frame, tImg);
+            Core.flip(tImg, frame, 1);
+        }
+        return frame;
+    }
+
+    private void performVerification(){
+        if(templates.size()<3){
+            verifTitle.setText("Templates not loaded");
+            return;
+        }
+        Mat frame = new Mat();
+        Utils.bitmapToMat(croppedEar, frame);
+
+        Imgproc.cvtColor(frame, frame, Imgproc.COLOR_RGBA2RGB);
+        MatOfDouble mean = new MatOfDouble();
+        MatOfDouble std = new MatOfDouble();
+        Core.meanStdDev(frame, mean, std);
+        float[] m = new float[]{
+                (float)mean.get(0,0)[0],
+                (float)mean.get(1,0)[0],
+                (float)mean.get(2,0)[0]};
+        float[] stdev = new float[]{
+                (float)std.get(0,0)[0],
+                (float)std.get(1,0)[0],
+                (float)std.get(2,0)[0]};
+
+        ImageProcessor imageProcessor = new ImageProcessor.Builder()
+                .add(new ResizeOp(224, 224, ResizeOp.ResizeMethod.BILINEAR))
+                .add(new NormalizeOp(m, stdev))
+                .build();
+
+        TensorImage tensorImage = new TensorImage(DataType.FLOAT32);
+
+        try {
+            tensorImage.load(croppedEar);
+
+            tensorImage = imageProcessor.process(tensorImage);
+        }catch (Exception e){
+            System.err.println(e.getMessage());
+        }
+        // Runs model inference and gets result.
+        float[] output = feat_extractor.process(tensorImage.getTensorBuffer())
+                .getOutputFeature0AsTensorBuffer()
+                .getFloatArray();
+
+        double[] probe = new double[1280];
+        for (int i = 0; i < 1280; i++) {
+            probe[i] = output[i];
+        }
+
+        double maxSimilarity = calculateSimilarity(probe, templates);
+        if(maxSimilarity > THRESHOLD) {
+            verificationSuccess = true;
+            similarityAchieved = maxSimilarity;
+            verifTitle.setText("Success, " + maxSimilarity);
+        }
+        else {
+            verificationSuccess = false;
+            verifTitle.setText("Failed, " + maxSimilarity);
+        }
+    }
+
+    private double calculateSimilarity(double[] probe, ArrayList<double[]> templates){
+        double maxSimilarity = 0;
+        PearsonsCorrelation corr = new PearsonsCorrelation();
+        for(double[] template:templates){
+            double similarity = corr.correlation(probe, template);
+            if(similarity > maxSimilarity)
+                maxSimilarity = similarity;
+        }
+        return maxSimilarity;
+    }
+
+    private ArrayList<double[]> retrieveTemplates(){
+        ArrayList<String> featureStrings = new ArrayList<>();
+        featureStrings.add(sharedPrefs.getString("t0", null));
+        featureStrings.add(sharedPrefs.getString("t1", null));
+        featureStrings.add(sharedPrefs.getString("t2", null));
+
+        ArrayList<double[]> featuresRetrieved = new ArrayList<>();
+        for(String feature : featureStrings){
+            if(feature!=null){
+                String[] strings = feature.split(",");
+                double[] values = new double[1280];
+                for(int i=0; i<1280; i++)
+                    values[i] = Double.parseDouble(strings[i]);
+                featuresRetrieved.add(values);
+            }
+        }
+        return featuresRetrieved;
+    }
+
+    public void onTryButtonClick(View button){
+        if(croppedEar!= null){
+            handler.post(new Runnable() {
+                @Override
+                public void run() {
+                    performVerification();
+                }
+            });
+        }
     }
 
     @Override

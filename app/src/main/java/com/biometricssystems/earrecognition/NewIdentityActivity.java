@@ -4,9 +4,14 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 
 import android.Manifest;
+import android.content.ContentValues;
+import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
+import android.graphics.Matrix;
+import android.net.Uri;
 import android.os.Bundle;
 import android.provider.MediaStore;
 import android.util.Log;
@@ -15,15 +20,19 @@ import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.Toast;
 
+import com.biometricssystems.earrecognition.ml.Model;
+
 import org.opencv.android.OpenCVLoader;
 import org.opencv.android.Utils;
 import org.opencv.core.Core;
 import org.opencv.core.Mat;
 import org.opencv.core.MatOfByte;
+import org.opencv.core.MatOfDouble;
 import org.opencv.core.MatOfFloat;
 import org.opencv.core.MatOfInt;
 import org.opencv.core.MatOfRect2d;
 import org.opencv.core.Point;
+import org.opencv.core.Rect;
 import org.opencv.core.Rect2d;
 import org.opencv.core.Scalar;
 import org.opencv.core.Size;
@@ -31,6 +40,11 @@ import org.opencv.dnn.Dnn;
 import org.opencv.dnn.Net;
 import org.opencv.imgproc.Imgproc;
 import org.opencv.utils.Converters;
+import org.tensorflow.lite.DataType;
+import org.tensorflow.lite.support.common.ops.NormalizeOp;
+import org.tensorflow.lite.support.image.ImageProcessor;
+import org.tensorflow.lite.support.image.TensorImage;
+import org.tensorflow.lite.support.image.ops.ResizeOp;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -39,6 +53,7 @@ import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 
 public class NewIdentityActivity extends AppCompatActivity {
 
@@ -47,12 +62,15 @@ public class NewIdentityActivity extends AppCompatActivity {
 
     Button btnTakePhoto;
     List<ImageView> imageViews = new ArrayList<>();
-    List<Bitmap> imgBitmaps = new ArrayList<>();
+    List<Bitmap> imgBitmaps = new ArrayList<>(3);
+    List<Bitmap> imgCropped = new ArrayList<>(3);
+    ArrayList<Uri> imageUris = new ArrayList<>(3);
 
     int imageCounter = 0;
     boolean imageCaptured = false;
 
     Net tinyYolo=null;
+    Model feat_extractor=null;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -65,16 +83,12 @@ public class NewIdentityActivity extends AppCompatActivity {
             // load your library and do initializing stuffs like System.loadLibrary();
         }
         initYolo();
+        initFeatureExtractor();
 
         btnTakePhoto = findViewById(R.id.btnTakePicture);
         imageViews.add(findViewById(R.id.imageOne));
         imageViews.add(findViewById(R.id.imageTwo));
         imageViews.add(findViewById(R.id.imageThree));
-
-        // Initialize imgBitmaps with a size of 3
-        for (int i = 0; i<3 ; i++) {
-            imgBitmaps.add(null);
-        }
 
         EnableRuntimePermission();
 
@@ -82,7 +96,15 @@ public class NewIdentityActivity extends AppCompatActivity {
             @Override
             public void onClick(View v) {
                 if (!imageCaptured){
+                    ContentValues values = new ContentValues();
+                    values.put(MediaStore.Images.Media.TITLE, "New Picture");
+                    values.put(MediaStore.Images.Media.DESCRIPTION, "From your Camera");
+                    Uri uri = getContentResolver().insert(
+                            MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+                    imageUris.add(uri);
                     Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+
+                    intent.putExtra(MediaStore.EXTRA_OUTPUT, imageUris.get(imageCounter));
                     startActivityForResult(intent, REQUEST_CODE);
                 } else {
                     submitImages();
@@ -96,8 +118,17 @@ public class NewIdentityActivity extends AppCompatActivity {
                 @Override
                 public void onClick(View view) {
                     if (imageCaptured) {
+                        int PICTURE_RESULT = REQUEST_CODE + final_i;
+
+                        ContentValues values = new ContentValues();
+                        values.put(MediaStore.Images.Media.TITLE, "Picture");
+                        values.put(MediaStore.Images.Media.DESCRIPTION, "From your Camera");
+                        Uri uri = getContentResolver().insert(
+                                MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+                        imageUris.set(final_i-1, uri);
                         Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
-                        startActivityForResult(intent, REQUEST_CODE + final_i);
+                        intent.putExtra(MediaStore.EXTRA_OUTPUT, imageUris.get(final_i-1));
+                        startActivityForResult(intent, PICTURE_RESULT);
                     }
                 }
             });
@@ -110,41 +141,78 @@ public class NewIdentityActivity extends AppCompatActivity {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQUEST_CODE && resultCode == RESULT_OK) {
             if (imageCounter < 3) {
-                Bitmap bitmap = (Bitmap) data.getExtras().get("data");
-                localizeAndSegmentEar(bitmap);
-                imageViews.get(imageCounter).setImageBitmap(bitmap);
-                imgBitmaps.add(imageCounter, bitmap);
+                try {
+                    Uri uri = imageUris.get(imageCounter);
+                    Bitmap bitmap = MediaStore.Images.Media.getBitmap(
+                            getContentResolver(), uri);
+                    Bitmap croppedImage = localizeAndSegmentEar(bitmap);
+                    Matrix matrix = new Matrix();
+                    matrix.postRotate(270);
+                    bitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
 
-                 // Prepare to capture next image
-                imageCounter++;
-                if (imageCounter == 3) {
-                    imageCaptured = true;
-                    btnTakePhoto.setText("Register");
-                    return;
-                };
+                    if(croppedImage == null){
+                        Toast.makeText(this, "EarRecognition: ear not found", Toast.LENGTH_SHORT).show();
+                    }
 
-                Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
-                startActivityForResult(intent, REQUEST_CODE);
+                    imageViews.get(imageCounter).setImageBitmap(bitmap);
+                    imgBitmaps.add(imageCounter, bitmap);
+                    imgCropped.add(imageCounter, croppedImage);
+
+                    // Prepare to capture next image
+                    imageCounter++;
+                    if (imageCounter == 3) {
+                        imageCaptured = true;
+                        btnTakePhoto.setText("Register");
+                        return;
+                    };
+                    ContentValues values = new ContentValues();
+                    values.put(MediaStore.Images.Media.TITLE, "Picture");
+                    values.put(MediaStore.Images.Media.DESCRIPTION, "From your Camera");
+                    imageUris.add(getContentResolver().insert(
+                            MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values));
+
+                    Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+                    intent.putExtra(MediaStore.EXTRA_OUTPUT, imageUris.get(imageCounter));
+                    startActivityForResult(intent, REQUEST_CODE);
+
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
             }
         }
         // Handle re-capture cases
         else if (requestCode >= REQUEST_CODE+1 && requestCode <= REQUEST_CODE+3 && resultCode == RESULT_OK) {
-            Bitmap bitmap = (Bitmap) data.getExtras().get("data");
-            int img_index = requestCode-(REQUEST_CODE+1);
-            localizeAndSegmentEar(bitmap);
-            imageViews.get(img_index).setImageBitmap(bitmap);
+            try {
+                int img_index = requestCode-(REQUEST_CODE+1);
+                Bitmap bitmap = MediaStore.Images.Media.getBitmap(
+                        getContentResolver(), imageUris.get(img_index));
+                Bitmap croppedImage = localizeAndSegmentEar(bitmap);
+                Matrix matrix = new Matrix();
+                matrix.postRotate(270);
+                bitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
+                if(croppedImage == null){
+                    Toast.makeText(this, "EarRecognition: ear not found", Toast.LENGTH_SHORT).show();
+                }
+                imageViews.get(img_index).setImageBitmap(bitmap);
+                imgCropped.set(img_index, croppedImage);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
         }
 
     }
 
-    private void localizeAndSegmentEar(Bitmap bitmap) {
+    private Bitmap localizeAndSegmentEar(Bitmap bitmap) {
+        Bitmap cropped = null;
         Mat frame = new Mat();
         Utils.bitmapToMat(bitmap, frame);
+        Core.transpose(frame, frame);
         Core.flip(frame, frame, 1);
+        Core.flip(frame, frame, 0);
 
         Mat grayFrame = frame.clone();
 
-        Imgproc.cvtColor(grayFrame, grayFrame, Imgproc.COLOR_RGB2GRAY);
+        Imgproc.cvtColor(grayFrame, grayFrame, Imgproc.COLOR_RGBA2GRAY);
         Imgproc.cvtColor(grayFrame, grayFrame, Imgproc.COLOR_GRAY2RGB);
 
         int numcols = grayFrame.cols();
@@ -233,18 +301,28 @@ public class NewIdentityActivity extends AppCompatActivity {
 
                 float conf = confs.get(idx);
                 if (conf == max_conf) {
+                    // save cropped ear
+                    Rect roi = new Rect(box.br(), box.tl());
+                    Mat crop = new Mat(frame, roi);
+                    cropped = Bitmap.createBitmap((int)box.width, (int)box.height, Bitmap.Config.ARGB_8888);
+                    Utils.matToBitmap(crop, cropped);
 
+                    // label ear on frame
                     List<String> labelNames = Arrays.asList("Left", "Right");
                     String intConf = new Integer((int) (conf * 100)).toString();
+
                     Imgproc.cvtColor(frame, frame, Imgproc.COLOR_RGB2BGR);
-                    Imgproc.rectangle(frame, box.br(), box.tl(), new Scalar(0, 255, 0), 1);
-                    Point textLoc = new Point(box.tl().x, box.tl().y-2);
-                    Imgproc.putText(frame, labelNames.get(idGuy) + intConf + "%", textLoc, Imgproc.FONT_HERSHEY_SIMPLEX, 0.5, new Scalar(255, 0, 240), 1);
-                    Imgproc.cvtColor(frame, frame, Imgproc.COLOR_BGR2RGB);
+                    Imgproc.rectangle(frame, box.br(), box.tl(), new Scalar(0, 255, 0), 10);
+                    Point textLoc = new Point(box.tl().x, box.tl().y-25);
+                    Imgproc.putText(frame, labelNames.get(idGuy) + intConf + "%", textLoc, Imgproc.FONT_HERSHEY_SIMPLEX, 10, new Scalar(255, 0, 240), 10);
+                    Imgproc.cvtColor(frame, frame, Imgproc.COLOR_BGR2RGBA);
                 }
             }
         }
+        Core.flip(frame, frame, 0);
+        Core.transpose(frame, frame);
         Utils.matToBitmap(frame, bitmap);
+        return cropped;
     }
 
 
@@ -273,9 +351,64 @@ public class NewIdentityActivity extends AppCompatActivity {
 
     void submitImages() {
         // Handle the pictures here
+        for (int i=0; i<imgCropped.size(); i++) {
+            extractAndSaveFeatures(imgCropped.get(i), i);
+        }
+        Toast.makeText(this, "Saved Templates!", Toast.LENGTH_LONG).show();
     }
 
-    public void initYolo() {
+    private void extractAndSaveFeatures(Bitmap segmentedEar, int index){
+        Mat frame = new Mat();
+        Utils.bitmapToMat(segmentedEar, frame);
+
+        Imgproc.cvtColor(frame, frame, Imgproc.COLOR_RGBA2RGB);
+        MatOfDouble mean = new MatOfDouble();
+        MatOfDouble std = new MatOfDouble();
+        Core.meanStdDev(frame, mean, std);
+        float[] m = new float[]{
+                (float)mean.get(0,0)[0],
+                (float)mean.get(1,0)[0],
+                (float)mean.get(2,0)[0]};
+        float[] stdev = new float[]{
+                (float)std.get(0,0)[0],
+                (float)std.get(1,0)[0],
+                (float)std.get(2,0)[0]};
+
+        ImageProcessor imageProcessor = new ImageProcessor.Builder()
+                .add(new ResizeOp(224, 224, ResizeOp.ResizeMethod.BILINEAR))
+                .add(new NormalizeOp(m, stdev))
+                .build();
+
+        TensorImage tensorImage = new TensorImage(DataType.FLOAT32);
+
+        try {
+            tensorImage.load(segmentedEar);
+
+            tensorImage = imageProcessor.process(tensorImage);
+        }catch (Exception e){
+            System.err.println(e.getMessage());
+        }
+        // Runs model inference and gets result.
+        float[] output = feat_extractor.process(tensorImage.getTensorBuffer())
+                .getOutputFeature0AsTensorBuffer()
+                .getFloatArray();
+
+        String[] features = new String[1280];
+
+        for(int i=0; i<1280; i++){
+            features[i] = String.valueOf(output[i]);
+        }
+
+        String joined = String.join(",", features);
+
+        SharedPreferences.Editor editor = getSharedPreferences(getString(R.string.app_name), Context.MODE_PRIVATE).edit();
+        String str = String.format(Locale.getDefault(), "t%d", index);
+        editor.putString(str, joined);
+        //System.out.println("EarRecognition: saving " + str + joined);
+        editor.apply();
+    }
+
+    private void initYolo() {
         if(tinyYolo == null) {
             MatOfByte yoloWeights = new MatOfByte();
             try {
@@ -286,6 +419,17 @@ public class NewIdentityActivity extends AppCompatActivity {
 
             tinyYolo = Dnn.readNetFromONNX(yoloWeights);
             Toast.makeText(this, "EarRecognition: yolo initialized", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void initFeatureExtractor() {
+        if(feat_extractor == null) {
+            try {
+                feat_extractor = Model.newInstance(this);
+            } catch (IOException e) {
+                // TODO Handle the exception
+            }
+            Toast.makeText(this, "EarRecognition: feature extractor initialized", Toast.LENGTH_LONG).show();
         }
     }
 
