@@ -201,13 +201,9 @@ public class NewIdentityActivity extends AppCompatActivity {
 
                 Mat frame = new Mat();
                 Utils.bitmapToMat(bitmap, frame);
-                Core.flip(frame, frame, 0);
+
                 frame = yolo.localizeAndSegmentEar(frame, false, true, true);
                 Utils.matToBitmap(frame, bitmap);
-
-                Matrix matrix = new Matrix();
-                matrix.postRotate(-90);
-                bitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
 
                 Bitmap croppedImage = yolo.getCroppedEar();
 
