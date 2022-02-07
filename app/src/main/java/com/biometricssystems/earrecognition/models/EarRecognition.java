@@ -32,7 +32,7 @@ public class EarRecognition {
     boolean verificationSuccess;
     ArrayList<double[]> templates;
 
-    public EarRecognition(Context context, SharedPreferences sharedPrefs){
+    public EarRecognition(final Context context, final SharedPreferences sharedPrefs){
         if(sharedPrefs!=null)
             templates = retrieveTemplates(sharedPrefs);
         if(feat_extractor == null) {
@@ -53,7 +53,7 @@ public class EarRecognition {
         return verificationSuccess;
     }
 
-    public void extractAndSaveFeatures(Bitmap segmentedEar, int index, SharedPreferences sharedPrefs){
+    public void extractAndSaveFeatures(final Bitmap segmentedEar, final int index, final SharedPreferences sharedPrefs){
         Mat frame = new Mat();
         Utils.bitmapToMat(segmentedEar, frame);
 
@@ -71,7 +71,7 @@ public class EarRecognition {
                 (float)std.get(2,0)[0]};
 
         ImageProcessor imageProcessor = new ImageProcessor.Builder()
-                .add(new ResizeOp(224, 224, ResizeOp.ResizeMethod.BILINEAR))
+                .add(new ResizeOp(224, 224, ResizeOp.ResizeMethod.NEAREST_NEIGHBOR))
                 .add(new NormalizeOp(m, stdev))
                 .build();
 
@@ -104,7 +104,7 @@ public class EarRecognition {
         editor.apply();
     }
 
-    public boolean performVerification(Bitmap croppedEar){
+    public boolean performVerification(final Bitmap croppedEar){
         verificationSuccess = false;
         if(templates.size()<3){
             return false;
@@ -155,7 +155,7 @@ public class EarRecognition {
         return  true;
     }
 
-    private double calculateSimilarity(double[] probe, ArrayList<double[]> templates){
+    private double calculateSimilarity(final double[] probe, final ArrayList<double[]> templates){
         double maxSimilarity = 0;
         PearsonsCorrelation corr = new PearsonsCorrelation();
         for(double[] template:templates){
@@ -166,7 +166,28 @@ public class EarRecognition {
         return maxSimilarity;
     }
 
-    private ArrayList<double[]> retrieveTemplates(SharedPreferences sharedPrefs){
+    private double cosineSimilarity(final double[] x1, final double[] x2){
+        return dot(x1, x2) / (norm(x1) * norm(x2));
+    }
+
+    private double dot(final double[] x1, final double[] x2){
+        double dot = 0;
+        if(x1.length != x2.length)
+            return 0;
+
+        for(int i=0; i<x1.length; i++)
+            dot += x1[i] * x2[i];
+        return dot;
+    }
+
+    private double norm(final double[] x){
+        double norm = 0;
+        for (double val:x)
+            norm += val*val;
+        return Math.sqrt(norm);
+    }
+
+    private ArrayList<double[]> retrieveTemplates(final SharedPreferences sharedPrefs){
         ArrayList<String> featureStrings = new ArrayList<>();
         featureStrings.add(sharedPrefs.getString("t0", null));
         featureStrings.add(sharedPrefs.getString("t1", null));
