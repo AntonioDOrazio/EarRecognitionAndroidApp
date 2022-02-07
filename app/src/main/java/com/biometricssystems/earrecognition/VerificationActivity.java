@@ -21,6 +21,8 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import com.biometricssystems.earrecognition.ml.Model;
+import com.biometricssystems.earrecognition.models.EarRecognition;
+import com.biometricssystems.earrecognition.models.YoloDetection;
 
 import org.apache.commons.math3.linear.RealMatrix;
 import org.apache.commons.math3.stat.correlation.PearsonsCorrelation;
@@ -71,33 +73,16 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
     public static Handler handler = new Handler();
 
     boolean startYolo = false;
-    boolean firstTimeYolo = true;
     boolean frozenCapture;
-    boolean verificationSuccess = false;
-    Net tinyYolo;
-    Model feat_extractor;
-    Bitmap croppedEar = null;
-    double THRESHOLD = 0.98;
-    ArrayList<double[]> templates = null;
+    YoloDetection yolo;
+
+    EarRecognition recognition;
 
     Mat oldFrame; // Initialization is later in the code
     Mat frozenFrame;
-    private double similarityAchieved;
 
     TextView verifTitle;
     Button yoloBtn;
-
-    private byte[] loadTextFromAssets(String assetsPath, Charset charset) throws IOException {
-        InputStream is = getAssets().open(assetsPath);
-        byte[] buffer = new byte[1024];
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        for (int length = is.read(buffer); length != -1; length = is.read(buffer)) {
-            baos.write(buffer, 0, length);
-        }
-        is.close();
-        baos.close();
-        return charset == null ? baos.toByteArray() : baos.toByteArray() ;
-    }
 
     private boolean isNotMoving(Mat curFrame_) {
 
@@ -146,35 +131,11 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
             startYolo = true;
             frozenCapture = false;
             yoloBtn.setText("Stop");
-            if (firstTimeYolo) {
-                MatOfByte yoloWeights = new MatOfByte();
-                try {
-                    yoloWeights.fromArray(loadTextFromAssets("ears.onnx", null));
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
-
-                tinyYolo = Dnn.readNetFromONNX(yoloWeights);
-                firstTimeYolo = false;
-                Toast.makeText(this, "yolo initialized", Toast.LENGTH_SHORT).show();
-
-                initFeatureExtractor();
-            }
-
+            if(yolo == null)
+                yolo = new YoloDetection(this);
         } else {
             startYolo = false;
             yoloBtn.setText("Start");
-        }
-    }
-
-    private void initFeatureExtractor() {
-        if(feat_extractor == null) {
-            try {
-                feat_extractor = Model.newInstance(this);
-            } catch (IOException e) {
-                // TODO Handle the exception
-            }
-            Toast.makeText(this, "EarRecognition: feature extractor initialized", Toast.LENGTH_LONG).show();
         }
     }
 
@@ -230,8 +191,8 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
         verifTitle = findViewById(R.id.titleVerification);
 
         yoloBtn.setOnClickListener(this::Yolo);
+        recognition = new EarRecognition(this, getSharedPreferences(getString(R.string.app_name), Context.MODE_PRIVATE));
 
-        templates = retrieveTemplates();
         frozenCapture = false;
     }
 
@@ -250,7 +211,8 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
         Mat frame = inputFrame.rgba();
         if (!frozenCapture && startYolo && isNotMoving(frame.clone())) {
             System.out.println("EarRecognition: not moving");
-            frame = performYoloDetection(frame);
+            frame = yolo.localizeAndSegmentEar(frame, false, false);
+            frozenCapture = yolo.isEarDetected();
             if(frozenCapture) {
                 startYolo = false;
                 frozenFrame = frame.clone();
@@ -271,223 +233,24 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
             return frame;
     }
 
-    private Mat performYoloDetection(Mat frame) {
-        System.out.println("EarRecognition: yolo is processing");
-
-        // rotate image since we use portrait mode
-        int[] targetSize = {frame.size(1), frame.size(0)};
-        Mat tImg = new Mat(targetSize, frame.type());
-        Core.transpose(frame, tImg);
-        Core.flip(tImg, frame, 0);
-
-        Mat grayFrame = frame.clone();
-
-        Imgproc.cvtColor(grayFrame, grayFrame, Imgproc.COLOR_RGBA2GRAY);
-        Imgproc.cvtColor(grayFrame, grayFrame, Imgproc.COLOR_GRAY2RGB);
-
-        Mat imageBlob = Dnn.blobFromImage(grayFrame,
-                1./(255),
-                new Size(640, 640),
-                new Scalar(0,0,0),
-                false // In case input is BGR, set it to true
-        );
-
-        tinyYolo.setInput(imageBlob);
-
-        List<Mat> result = new ArrayList<Mat>(2);
-
-        List<String> outBlobNames = new ArrayList<>();
-
-        outBlobNames.add(0, "output");
-
-        tinyYolo.forward(result, outBlobNames);
-        Mat res = result.get(0);
-
-        res = res.reshape(1, 25200);
-
-        List<Integer> clsIds = new ArrayList<>();
-        List<Float> confs = new ArrayList<>();
-        List<Rect2d> rects = new ArrayList<>();
-
-        float x_factor = ((float) frame.width() )/ (float) 640.0;
-        float y_factor = ((float) frame.height())/ (float) 640.0;
-
-        for (int j=0; j<25200;j++) {
-
-            Mat row = res.row(j);
-
-            //Mat classes_scores = row.colRange(5, res.cols());
-            Core.MinMaxLocResult minMaxLocResult = Core.minMaxLoc(row.colRange(5, 7));
-
-            float confidence = (float) (row.get(0,4)[0]);
-            Point classIdPoint = minMaxLocResult.maxLoc;
-
-            if (confidence > 0.85) {
-
-                int x = (int) (row.get(0,0)[0]);
-                int y = (int) (row.get(0,1)[0]);
-                int w   = (int) (row.get(0,2)[0]);
-                int h  = (int) (row.get(0,3)[0]);
-
-                int left = (int) ((x - 0.5 * w ) * x_factor);
-                int top = (int) ((y-0.5*h) * y_factor);
-                int width = (int) (w * x_factor);
-                int height = (int) (h * y_factor);
-
-                Rect roi = new Rect(left, top, width, height);
-                Mat crop = new Mat(frame, roi);
-                croppedEar = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
-                Utils.matToBitmap(crop, croppedEar);
-
-                clsIds.add((int)classIdPoint.x);
-                confs.add((float) confidence);
-                Rect2d box = new Rect2d(left, top, width, height);
-                rects.add(box);
-                System.out.println("Predicted " + classIdPoint.x + " confidence " + confidence);
-            }
-        }
-
-        if (confs.size() > 0) {
-            MatOfFloat confidences = new MatOfFloat(Converters.vector_float_to_Mat(confs));
-            Rect2d[] boxesArray = rects.toArray(new Rect2d[0]);
-            MatOfRect2d boxes = new MatOfRect2d();
-            boxes.fromList(rects);
-            MatOfInt indices = new MatOfInt();
-            float nmsThresh = 0.2f;
-
-            Dnn.NMSBoxes(boxes, confidences, (float)  0.25, (float) 0.45, indices);
-
-            int[] ind = indices.toArray();
-            float max_conf = -1;
-            for (int i = 0; i <ind.length; i++) {
-                float conf = confs.get(ind[i]);
-                if (conf > max_conf) max_conf = conf;
-            }
-
-            for (int i = 0; i < ind.length; i++) {
-                int idx = ind[i];
-                Rect2d box = boxesArray[idx];
-                int idGuy = clsIds.get(idx);
-
-                float conf = confs.get(idx);
-                if (conf == max_conf) {
-                    // ear detected
-                    frozenCapture = true;
-                    List<String> labelNames = Arrays.asList("LeftEar", "RightEar");
-                    String intConf = new Integer((int) (conf * 100)).toString();
-                    Imgproc.cvtColor(frame, frame, Imgproc.COLOR_RGBA2BGR);
-                    Imgproc.putText(frame, labelNames.get(idGuy) + intConf + "%", box.tl(), Imgproc.FONT_HERSHEY_SIMPLEX, 1, new Scalar(255, 0, 240), 2);
-                    Imgproc.rectangle(frame, box.br(), box.tl(), new Scalar(0, 255, 0), 2);
-                    Imgproc.cvtColor(frame, frame, Imgproc.COLOR_BGR2RGBA);
-                }
-            }
-        }
-
-        // rotate again
-        targetSize[0] = frame.size(1);
-        targetSize[1] = frame.size(0);
-
-        tImg = new Mat(targetSize, frame.type());
-        Core.transpose(frame, tImg);
-        Core.flip(tImg, frame, 1);
-        return frame;
-    }
-
-    private void performVerification(){
-        if(templates.size()<3){
-            verifTitle.setText("Templates not loaded");
-            return;
-        }
-        Mat frame = new Mat();
-        Utils.bitmapToMat(croppedEar, frame);
-
-        Imgproc.cvtColor(frame, frame, Imgproc.COLOR_RGBA2RGB);
-        MatOfDouble mean = new MatOfDouble();
-        MatOfDouble std = new MatOfDouble();
-        Core.meanStdDev(frame, mean, std);
-        float[] m = new float[]{
-                (float)mean.get(0,0)[0],
-                (float)mean.get(1,0)[0],
-                (float)mean.get(2,0)[0]};
-        float[] stdev = new float[]{
-                (float)std.get(0,0)[0],
-                (float)std.get(1,0)[0],
-                (float)std.get(2,0)[0]};
-
-        ImageProcessor imageProcessor = new ImageProcessor.Builder()
-                .add(new ResizeOp(224, 224, ResizeOp.ResizeMethod.BILINEAR))
-                .add(new NormalizeOp(m, stdev))
-                .build();
-
-        TensorImage tensorImage = new TensorImage(DataType.FLOAT32);
-
-        try {
-            tensorImage.load(croppedEar);
-
-            tensorImage = imageProcessor.process(tensorImage);
-        }catch (Exception e){
-            System.err.println(e.getMessage());
-        }
-        // Runs model inference and gets result.
-        float[] output = feat_extractor.process(tensorImage.getTensorBuffer())
-                .getOutputFeature0AsTensorBuffer()
-                .getFloatArray();
-
-        double[] probe = new double[1280];
-        for (int i = 0; i < 1280; i++) {
-            probe[i] = output[i];
-        }
-
-        double maxSimilarity = calculateSimilarity(probe, templates);
-        if(maxSimilarity > THRESHOLD) {
-            verificationSuccess = true;
-            similarityAchieved = maxSimilarity;
-            verifTitle.setText("Success, " + maxSimilarity);
-            verifTitle.setTextColor(getColor(R.color.success));
-        }
-        else {
-            verificationSuccess = false;
-            verifTitle.setText("Failed, " + maxSimilarity);
-            verifTitle.setTextColor(getColor(R.color.failure));
-        }
-    }
-
-    private double calculateSimilarity(double[] probe, ArrayList<double[]> templates){
-        double maxSimilarity = 0;
-        PearsonsCorrelation corr = new PearsonsCorrelation();
-        for(double[] template:templates){
-            double similarity = corr.correlation(probe, template);
-            if(similarity > maxSimilarity)
-                maxSimilarity = similarity;
-        }
-        return maxSimilarity;
-    }
-
-    private ArrayList<double[]> retrieveTemplates(){
-        ArrayList<String> featureStrings = new ArrayList<>();
-        featureStrings.add(sharedPrefs.getString("t0", null));
-        featureStrings.add(sharedPrefs.getString("t1", null));
-        featureStrings.add(sharedPrefs.getString("t2", null));
-
-        ArrayList<double[]> featuresRetrieved = new ArrayList<>();
-        for(String feature : featureStrings){
-            if(feature!=null){
-                String[] strings = feature.split(",");
-                double[] values = new double[1280];
-                for(int i=0; i<1280; i++)
-                    values[i] = Double.parseDouble(strings[i]);
-                featuresRetrieved.add(values);
-            }
-        }
-        return featuresRetrieved;
-    }
-
     public void onTryButtonClick(View button){
-        if(croppedEar!= null){
+        if(yolo.isEarDetected()){
             handler.post(new Runnable() {
                 @Override
                 public void run() {
-                    performVerification();
+                    if(recognition.performVerification(yolo.getCroppedEar())){
+                        // performed verification
+                        if(recognition.isVerificationSuccess()) {
+                            verifTitle.setText("Success, " + recognition.getSimilarityAchieved());
+                            verifTitle.setTextColor(getColor(R.color.success));
+                        }
+                        else {
+                            verifTitle.setText("Failed, " + recognition.getSimilarityAchieved());
+                            verifTitle.setTextColor(getColor(R.color.failure));
+                        }
+                    } else {
+
+                    }
                 }
             });
         }

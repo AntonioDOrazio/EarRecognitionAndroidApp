@@ -21,6 +21,8 @@ import android.widget.ImageView;
 import android.widget.Toast;
 
 import com.biometricssystems.earrecognition.ml.Model;
+import com.biometricssystems.earrecognition.models.EarRecognition;
+import com.biometricssystems.earrecognition.models.YoloDetection;
 
 import org.opencv.android.OpenCVLoader;
 import org.opencv.android.Utils;
@@ -69,8 +71,8 @@ public class NewIdentityActivity extends AppCompatActivity {
     int imageCounter = 0;
     boolean imageCaptured = false;
 
-    Net tinyYolo=null;
-    Model feat_extractor=null;
+    YoloDetection yolo;
+    EarRecognition recognition;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -82,8 +84,8 @@ public class NewIdentityActivity extends AppCompatActivity {
         }else{
             // load your library and do initializing stuffs like System.loadLibrary();
         }
-        initYolo();
-        initFeatureExtractor();
+        yolo = new YoloDetection(this);
+        recognition = new EarRecognition(this, null);
 
         btnTakePhoto = findViewById(R.id.btnTakePicture);
         imageViews.add(findViewById(R.id.imageOne));
@@ -145,10 +147,18 @@ public class NewIdentityActivity extends AppCompatActivity {
                     Uri uri = imageUris.get(imageCounter);
                     Bitmap bitmap = MediaStore.Images.Media.getBitmap(
                             getContentResolver(), uri);
-                    Bitmap croppedImage = localizeAndSegmentEar(bitmap);
+
+                    Mat frame = new Mat();
+                    Utils.bitmapToMat(bitmap, frame);
+                    Core.flip(frame, frame, 0);
+                    frame = yolo.localizeAndSegmentEar(frame, false, true);
+                    Utils.matToBitmap(frame, bitmap);
+
                     Matrix matrix = new Matrix();
-                    matrix.postRotate(270);
+                    matrix.postRotate(-90);
                     bitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
+
+                    Bitmap croppedImage = yolo.getCroppedEar();
 
                     if(croppedImage == null){
                         Toast.makeText(this, "EarRecognition: ear not found", Toast.LENGTH_SHORT).show();
@@ -186,10 +196,14 @@ public class NewIdentityActivity extends AppCompatActivity {
                 int img_index = requestCode-(REQUEST_CODE+1);
                 Bitmap bitmap = MediaStore.Images.Media.getBitmap(
                         getContentResolver(), imageUris.get(img_index));
-                Bitmap croppedImage = localizeAndSegmentEar(bitmap);
-                Matrix matrix = new Matrix();
-                matrix.postRotate(270);
-                bitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
+
+                Mat frame = new Mat();
+                Utils.bitmapToMat(bitmap, frame);
+                frame = yolo.localizeAndSegmentEar(frame, false, true);
+                Utils.matToBitmap(frame, bitmap);
+
+                Bitmap croppedImage = yolo.getCroppedEar();
+
                 if(croppedImage == null){
                     Toast.makeText(this, "EarRecognition: ear not found", Toast.LENGTH_SHORT).show();
                 }
@@ -201,130 +215,6 @@ public class NewIdentityActivity extends AppCompatActivity {
         }
 
     }
-
-    private Bitmap localizeAndSegmentEar(Bitmap bitmap) {
-        Bitmap cropped = null;
-        Mat frame = new Mat();
-        Utils.bitmapToMat(bitmap, frame);
-        Core.transpose(frame, frame);
-        Core.flip(frame, frame, 1);
-        Core.flip(frame, frame, 0);
-
-        Mat grayFrame = frame.clone();
-
-        Imgproc.cvtColor(grayFrame, grayFrame, Imgproc.COLOR_RGBA2GRAY);
-        Imgproc.cvtColor(grayFrame, grayFrame, Imgproc.COLOR_GRAY2RGB);
-
-        int numcols = grayFrame.cols();
-        int numrows = grayFrame.rows();
-        int _max = Math.max(numcols, numrows);
-
-        Mat imageBlob = Dnn.blobFromImage(grayFrame,
-                1./(255),
-                new Size(640, 640),
-                new Scalar(0,0,0),
-                false // In case input is BGR, set it to true
-        );
-
-        tinyYolo.setInput(imageBlob);
-
-        List<Mat> result = new ArrayList<Mat>(2);
-
-        List<String> outBlobNames = new ArrayList<>();
-
-        outBlobNames.add(0, "output");
-
-        tinyYolo.forward(result, outBlobNames);
-        Mat res = result.get(0);
-
-        res = res.reshape(1, 25200);
-
-        List<Integer> clsIds = new ArrayList<>();
-        List<Float> confs = new ArrayList<>();
-        List<Rect2d> rects = new ArrayList<>();
-
-        float x_factor = ((float) frame.width() )/ (float) 640.0;
-        float y_factor = ((float) frame.height())/ (float) 640.0;
-
-        for (int j=0; j<25200;j++) {
-
-            Mat row = res.row(j);
-
-            //Mat classes_scores = row.colRange(5, res.cols());
-            Core.MinMaxLocResult minMaxLocResult = Core.minMaxLoc(row.colRange(5, 7));
-
-            float confidence = (float) (row.get(0,4)[0]);
-            Point classIdPoint = minMaxLocResult.maxLoc;
-
-            if (confidence > 0.85) {
-
-                int x = (int) (row.get(0,0)[0]);
-                int y = (int) (row.get(0,1)[0]);
-                int w   = (int) (row.get(0,2)[0]);
-                int h  = (int) (row.get(0,3)[0]);
-
-                int left = (int) ((x - 0.5 * w ) * x_factor);
-                int top = (int) ((y-0.5*h) * y_factor);
-                int width = (int) (w * x_factor);
-                int height = (int) (h * y_factor);
-
-
-                clsIds.add((int)classIdPoint.x);
-                confs.add((float) confidence);
-                Rect2d box = new Rect2d(left, top, width, height);
-                rects.add(box);
-                System.out.println("Predicted " + classIdPoint.x + " confidence " + confidence);
-            }
-        }
-
-        if (confs.size() > 0) {
-            MatOfFloat confidences = new MatOfFloat(Converters.vector_float_to_Mat(confs));
-            Rect2d[] boxesArray = rects.toArray(new Rect2d[0]);
-            MatOfRect2d boxes = new MatOfRect2d();
-            boxes.fromList(rects);
-            MatOfInt indices = new MatOfInt();
-            float nmsThresh = 0.2f;
-
-            Dnn.NMSBoxes(boxes, confidences, (float)  0.25, (float) 0.45, indices);
-
-            int[] ind = indices.toArray();
-            float max_conf = -1;
-            for (int i = 0; i <ind.length; i++) {
-                float conf = confs.get(ind[i]);
-                if (conf > max_conf) max_conf = conf;
-            }
-
-            for (int i = 0; i < ind.length; i++) {
-                int idx = ind[i];
-                Rect2d box = boxesArray[idx];
-                int idGuy = clsIds.get(idx);
-
-                float conf = confs.get(idx);
-                if (conf == max_conf) {
-                    // save cropped ear
-                    Rect roi = new Rect(box.br(), box.tl());
-                    Mat crop = new Mat(frame, roi);
-                    cropped = Bitmap.createBitmap((int)box.width, (int)box.height, Bitmap.Config.ARGB_8888);
-                    Utils.matToBitmap(crop, cropped);
-
-                    // label ear on frame
-                    List<String> labelNames = Arrays.asList("Left", "Right");
-                    String intConf = new Integer((int) (conf * 100)).toString();
-
-                    Imgproc.cvtColor(frame, frame, Imgproc.COLOR_RGB2BGR);
-                    Imgproc.rectangle(frame, box.br(), box.tl(), new Scalar(0, 255, 0), 10);
-                    Point textLoc = new Point(box.tl().x, box.tl().y-25);
-                    Imgproc.putText(frame, labelNames.get(idGuy) + intConf + "%", textLoc, Imgproc.FONT_HERSHEY_SIMPLEX, 10, new Scalar(255, 0, 240), 10);
-                    Imgproc.cvtColor(frame, frame, Imgproc.COLOR_BGR2RGBA);
-                }
-            }
-        }
-        Core.flip(frame, frame, 0);
-        Core.transpose(frame, frame);
-        Utils.matToBitmap(frame, bitmap);
-        return cropped;
-    }
-
 
     public void EnableRuntimePermission(){
         if (ActivityCompat.shouldShowRequestPermissionRationale(NewIdentityActivity.this,
@@ -352,96 +242,8 @@ public class NewIdentityActivity extends AppCompatActivity {
     void submitImages() {
         // Handle the pictures here
         for (int i=0; i<imgCropped.size(); i++) {
-            extractAndSaveFeatures(imgCropped.get(i), i);
+            recognition.extractAndSaveFeatures(imgCropped.get(i), i, getSharedPreferences(getString(R.string.app_name), MODE_PRIVATE));
         }
         Toast.makeText(this, "Saved Templates!", Toast.LENGTH_LONG).show();
-    }
-
-    private void extractAndSaveFeatures(Bitmap segmentedEar, int index){
-        Mat frame = new Mat();
-        Utils.bitmapToMat(segmentedEar, frame);
-
-        Imgproc.cvtColor(frame, frame, Imgproc.COLOR_RGBA2RGB);
-        MatOfDouble mean = new MatOfDouble();
-        MatOfDouble std = new MatOfDouble();
-        Core.meanStdDev(frame, mean, std);
-        float[] m = new float[]{
-                (float)mean.get(0,0)[0],
-                (float)mean.get(1,0)[0],
-                (float)mean.get(2,0)[0]};
-        float[] stdev = new float[]{
-                (float)std.get(0,0)[0],
-                (float)std.get(1,0)[0],
-                (float)std.get(2,0)[0]};
-
-        ImageProcessor imageProcessor = new ImageProcessor.Builder()
-                .add(new ResizeOp(224, 224, ResizeOp.ResizeMethod.BILINEAR))
-                .add(new NormalizeOp(m, stdev))
-                .build();
-
-        TensorImage tensorImage = new TensorImage(DataType.FLOAT32);
-
-        try {
-            tensorImage.load(segmentedEar);
-
-            tensorImage = imageProcessor.process(tensorImage);
-        }catch (Exception e){
-            System.err.println(e.getMessage());
-        }
-        // Runs model inference and gets result.
-        float[] output = feat_extractor.process(tensorImage.getTensorBuffer())
-                .getOutputFeature0AsTensorBuffer()
-                .getFloatArray();
-
-        String[] features = new String[1280];
-
-        for(int i=0; i<1280; i++){
-            features[i] = String.valueOf(output[i]);
-        }
-
-        String joined = String.join(",", features);
-
-        SharedPreferences.Editor editor = getSharedPreferences(getString(R.string.app_name), Context.MODE_PRIVATE).edit();
-        String str = String.format(Locale.getDefault(), "t%d", index);
-        editor.putString(str, joined);
-        //System.out.println("EarRecognition: saving " + str + joined);
-        editor.apply();
-    }
-
-    private void initYolo() {
-        if(tinyYolo == null) {
-            MatOfByte yoloWeights = new MatOfByte();
-            try {
-                yoloWeights.fromArray(loadTextFromAssets("ears.onnx", null));
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-
-            tinyYolo = Dnn.readNetFromONNX(yoloWeights);
-            Toast.makeText(this, "EarRecognition: yolo initialized", Toast.LENGTH_SHORT).show();
-        }
-    }
-
-    private void initFeatureExtractor() {
-        if(feat_extractor == null) {
-            try {
-                feat_extractor = Model.newInstance(this);
-            } catch (IOException e) {
-                // TODO Handle the exception
-            }
-            Toast.makeText(this, "EarRecognition: feature extractor initialized", Toast.LENGTH_LONG).show();
-        }
-    }
-
-    private byte[] loadTextFromAssets(String assetsPath, Charset charset) throws IOException {
-        InputStream is = getAssets().open(assetsPath);
-        byte[] buffer = new byte[1024];
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        for (int length = is.read(buffer); length != -1; length = is.read(buffer)) {
-            baos.write(buffer, 0, length);
-        }
-        is.close();
-        baos.close();
-        return charset == null ? baos.toByteArray() : baos.toByteArray() ;
     }
 }
