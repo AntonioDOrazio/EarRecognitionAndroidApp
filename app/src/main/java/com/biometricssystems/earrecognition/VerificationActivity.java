@@ -86,6 +86,14 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
         cameraBridgeViewBase.enableView();
         verifTitle = findViewById(R.id.titleVerification);
 
+        yoloBtn.setOnClickListener(this::retryCapture);
+        yoloBtn.setVisibility(View.INVISIBLE);
+        if(yolo == null){
+            yolo = new YoloDetection(this);
+        }
+        startYolo = true;
+
+
         recognition = new EarRecognition(this, getSharedPreferences(getString(R.string.app_name), Context.MODE_PRIVATE));
 
         frozenCapture = false;
@@ -129,16 +137,15 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
 
         oldFrame = curFrame.clone();
 
-        return(contourArea < 500); // old 100 poi 120
+        return(contourArea < 140); // old 100 poi 120
 
     }
 
-    public void activateYolo(View button) {
-        startYolo = true;
+    public void retryCapture(View button) {
+
         frozenCapture = false;
         yoloBtn.setVisibility(View.INVISIBLE);
-        if(yolo == null)
-            yolo = new YoloDetection(this);
+
     }
 
     private static final int MY_CAMERA_REQUEST_CODE = 100;
@@ -175,13 +182,13 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
             frame = yolo.localizeAndSegmentEar(frame, true, false, false);
             frozenCapture = yolo.isEarDetected();
             if(frozenCapture) {
-                startYolo = false;
                 frozenFrame = frame.clone();
                 handler.post(new Runnable() {
                     @Override
                     public void run() {
                         final Vibrator vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
-                        final VibrationEffect vibrationEffect = VibrationEffect.createOneShot(500, VibrationEffect.DEFAULT_AMPLITUDE);
+                        final VibrationEffect vibrationSuccess = VibrationEffect.createOneShot(250, VibrationEffect.DEFAULT_AMPLITUDE);
+                        final VibrationEffect vibrationFailed = VibrationEffect.createOneShot(500, VibrationEffect.DEFAULT_AMPLITUDE);
 
                         if(recognition.performVerification(yolo.getCroppedEar())){
                             String similarity = String.format("%.4f", recognition.getSimilarityAchieved());
@@ -189,16 +196,18 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
                             if(recognition.isVerificationSuccess()) {
                                 verifTitle.setText("Success (" + similarity + ")");
                                 verifTitle.setTextColor(getColor(R.color.success));
-
-                                // this is the only type of the vibration which requires system version Oreo (API 26)
                                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                                     vibrator.cancel();
-                                    vibrator.vibrate(vibrationEffect);
+                                    vibrator.vibrate(vibrationSuccess);
                                 }
                             }
                             else {
                                 verifTitle.setText("Failed (" + similarity + ")");
                                 verifTitle.setTextColor(getColor(R.color.failure));
+                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                    vibrator.cancel();
+                                    vibrator.vibrate(vibrationFailed);
+                                }
                             }
                         } else {
                             verifTitle.setText("No registered identity");
