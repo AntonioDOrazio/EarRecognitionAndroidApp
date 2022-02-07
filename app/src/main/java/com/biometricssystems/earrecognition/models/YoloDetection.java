@@ -46,13 +46,12 @@ public class YoloDetection {
         return earDetected;
     }
 
-    public Mat localizeAndSegmentEar(Mat frame, boolean flipVertical, boolean highRes) {
+    public Mat localizeAndSegmentEar(Mat frame, boolean rotate, boolean flipHorizontal, boolean highRes) {
         earDetected = false;
-        Core.transpose(frame, frame);
-        Core.flip(frame, frame, 0);
-
-        if(flipVertical)
-            Core.flip(frame, frame, 1);
+        if(rotate) {
+            Core.transpose(frame, frame);
+            Core.flip(frame, frame, 0);
+        }
 
         Mat grayFrame = frame.clone();
 
@@ -153,7 +152,12 @@ public class YoloDetection {
                     Utils.matToBitmap(crop, croppedEar);
 
                     // label ear on frame
-                    List<String> labelNames = Arrays.asList("Left", "Right");
+                    List<String> labelNames;
+                    if(flipHorizontal)
+                        labelNames = Arrays.asList("Right", "Left");
+                    else
+                        labelNames = Arrays.asList("Left", "Right");
+
                     String intConf = new Integer((int) (conf * 100)).toString();
 
                     Imgproc.cvtColor(frame, frame, Imgproc.COLOR_RGB2BGR);
@@ -163,7 +167,8 @@ public class YoloDetection {
                         Imgproc.putText(frame, labelNames.get(idGuy) + intConf + "%", textLoc, Imgproc.FONT_HERSHEY_SIMPLEX, 10, new Scalar(255, 0, 240), 10);
                     } else {
                         Imgproc.rectangle(frame, box.br(), box.tl(), new Scalar(0, 255, 0), 2);
-                        Imgproc.putText(frame, labelNames.get(idGuy) + intConf + "%", box.tl(), Imgproc.FONT_HERSHEY_SIMPLEX, 1, new Scalar(255, 0, 240), 2);
+                        Point textLoc = new Point(box.tl().x, box.tl().y - 10);
+                        Imgproc.putText(frame, labelNames.get(idGuy) + intConf + "%", textLoc, Imgproc.FONT_HERSHEY_SIMPLEX, 1, new Scalar(255, 0, 240), 2);
                     }
 
                     Imgproc.cvtColor(frame, frame, Imgproc.COLOR_BGR2RGBA);
@@ -171,14 +176,11 @@ public class YoloDetection {
             }
         }
 
-        Bitmap temp = Bitmap.createBitmap(frame.width(), frame.height(), Bitmap.Config.ARGB_8888);
-        Utils.matToBitmap(frame, temp);
+        if(rotate) {
+            Core.flip(frame, frame, 0);
+            Core.transpose(frame, frame);
+        }
 
-        if(flipVertical)
-            Core.flip(frame, frame, 1);
-
-        Core.flip(frame, frame, 0);
-        Core.transpose(frame, frame);
         return frame;
     }
 

@@ -10,8 +10,10 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
+import android.graphics.ImageDecoder;
 import android.graphics.Matrix;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.provider.MediaStore;
 import android.util.Log;
@@ -145,18 +147,15 @@ public class NewIdentityActivity extends AppCompatActivity {
             if (imageCounter < 3) {
                 try {
                     Uri uri = imageUris.get(imageCounter);
-                    Bitmap bitmap = MediaStore.Images.Media.getBitmap(
-                            getContentResolver(), uri);
+                    ImageDecoder.Source source = ImageDecoder.createSource(getContentResolver(), uri);
+                    Bitmap bitmap = ImageDecoder.decodeBitmap(source);
+                    bitmap = bitmap.copy(Bitmap.Config.ARGB_8888, true);
 
                     Mat frame = new Mat();
                     Utils.bitmapToMat(bitmap, frame);
-                    Core.flip(frame, frame, 0);
-                    frame = yolo.localizeAndSegmentEar(frame, false, true);
-                    Utils.matToBitmap(frame, bitmap);
 
-                    Matrix matrix = new Matrix();
-                    matrix.postRotate(-90);
-                    bitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
+                    frame = yolo.localizeAndSegmentEar(frame, false, true, true);
+                    Utils.matToBitmap(frame, bitmap);
 
                     Bitmap croppedImage = yolo.getCroppedEar();
 
@@ -194,13 +193,16 @@ public class NewIdentityActivity extends AppCompatActivity {
         else if (requestCode >= REQUEST_CODE+1 && requestCode <= REQUEST_CODE+3 && resultCode == RESULT_OK) {
             try {
                 int img_index = requestCode-(REQUEST_CODE+1);
-                Bitmap bitmap = MediaStore.Images.Media.getBitmap(
-                        getContentResolver(), imageUris.get(img_index));
+                Uri selectedPhotoUri = imageUris.get(img_index);
+
+                ImageDecoder.Source source = ImageDecoder.createSource(getContentResolver(), selectedPhotoUri);
+                Bitmap bitmap = ImageDecoder.decodeBitmap(source);
+                bitmap = bitmap.copy(Bitmap.Config.ARGB_8888, true);
 
                 Mat frame = new Mat();
                 Utils.bitmapToMat(bitmap, frame);
                 Core.flip(frame, frame, 0);
-                frame = yolo.localizeAndSegmentEar(frame, false, true);
+                frame = yolo.localizeAndSegmentEar(frame, false, true, true);
                 Utils.matToBitmap(frame, bitmap);
 
                 Matrix matrix = new Matrix();

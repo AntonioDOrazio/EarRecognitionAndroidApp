@@ -211,7 +211,7 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
         Mat frame = inputFrame.rgba();
         if (!frozenCapture && startYolo && isNotMoving(frame.clone())) {
             System.out.println("EarRecognition: not moving");
-            frame = yolo.localizeAndSegmentEar(frame, false, false);
+            frame = yolo.localizeAndSegmentEar(frame, true, false, false);
             frozenCapture = yolo.isEarDetected();
             if(frozenCapture) {
                 startYolo = false;
