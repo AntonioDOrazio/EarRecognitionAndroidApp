@@ -54,6 +54,43 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
     TextView verifTitle;
     Button yoloBtn;
 
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_verification);
+
+        if(!OpenCVLoader.initDebug()){
+            Log.d("CVerror","OpenCV library Init failure");
+        }else{
+            // load your library and do initializing stuffs like System.loadLibrary();
+        }
+
+        cameraBridgeViewBase = (JavaCameraView) findViewById((R.id.CameraView));
+        cameraBridgeViewBase.setVisibility(SurfaceView.VISIBLE);
+        cameraBridgeViewBase.setCvCameraViewListener(this);
+        cameraBridgeViewBase.setCameraIndex(1);
+        sharedPrefs = getSharedPreferences(getString(R.string.app_name), Context.MODE_PRIVATE);
+        yoloBtn = (Button) findViewById(R.id.button2);
+
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.CAMERA}, MY_CAMERA_REQUEST_CODE);
+        }
+        if (checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.READ_EXTERNAL_STORAGE}, MY_READ_STORAGE_REQUEST_CODE);
+        }
+        if (checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, MY_WRITE_STORAGE_REQUEST_CODE);
+        }
+
+        cameraBridgeViewBase.setCameraPermissionGranted();
+        cameraBridgeViewBase.enableView();
+        verifTitle = findViewById(R.id.titleVerification);
+
+        recognition = new EarRecognition(this, getSharedPreferences(getString(R.string.app_name), Context.MODE_PRIVATE));
+
+        frozenCapture = false;
+    }
+
     private boolean isNotMoving(Mat curFrame_) {
 
         Mat curFrame = curFrame_;
@@ -96,17 +133,12 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
 
     }
 
-    private void Yolo(View button) {
-        if (!startYolo) {
-            startYolo = true;
-            frozenCapture = false;
-            yoloBtn.setText("Stop");
-            if(yolo == null)
-                yolo = new YoloDetection(this);
-        } else {
-            startYolo = false;
-            yoloBtn.setText("Start");
-        }
+    public void activateYolo(View button) {
+        startYolo = true;
+        frozenCapture = false;
+        yoloBtn.setVisibility(View.INVISIBLE);
+        if(yolo == null)
+            yolo = new YoloDetection(this);
     }
 
     private static final int MY_CAMERA_REQUEST_CODE = 100;
@@ -119,52 +151,10 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
         if (requestCode == MY_CAMERA_REQUEST_CODE) {
             if (grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 Toast.makeText(this, "camera permission granted", Toast.LENGTH_LONG).show();
-
-
             } else {
                 Toast.makeText(this, "camera permission denied", Toast.LENGTH_LONG).show();
             }
         }
-    }
-
-
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_verification);
-
-        if(!OpenCVLoader.initDebug()){
-            Log.d("CVerror","OpenCV library Init failure");
-        }else{
-            // load your library and do initializing stuffs like System.loadLibrary();
-        }
-
-        cameraBridgeViewBase = (JavaCameraView) findViewById((R.id.CameraView));
-        cameraBridgeViewBase.setVisibility(SurfaceView.VISIBLE);
-        cameraBridgeViewBase.setCvCameraViewListener(this);
-        cameraBridgeViewBase.setCameraIndex(1);
-        sharedPrefs = getSharedPreferences(getString(R.string.app_name), Context.MODE_PRIVATE);
-        yoloBtn = (Button) findViewById(R.id.button2);
-
-        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.CAMERA}, MY_CAMERA_REQUEST_CODE);
-        }
-        if (checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.READ_EXTERNAL_STORAGE}, MY_READ_STORAGE_REQUEST_CODE);
-        }
-        if (checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, MY_WRITE_STORAGE_REQUEST_CODE);
-        }
-
-        cameraBridgeViewBase.setCameraPermissionGranted();
-        cameraBridgeViewBase.enableView();
-        verifTitle = findViewById(R.id.titleVerification);
-
-        yoloBtn.setOnClickListener(this::Yolo);
-        yoloBtn.performClick();
-        recognition = new EarRecognition(this, getSharedPreferences(getString(R.string.app_name), Context.MODE_PRIVATE));
-
-        frozenCapture = false;
     }
 
     @Override
@@ -190,7 +180,32 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
                 handler.post(new Runnable() {
                     @Override
                     public void run() {
-                        yoloBtn.setText("Repeat");
+                        final Vibrator vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+                        final VibrationEffect vibrationEffect = VibrationEffect.createOneShot(500, VibrationEffect.DEFAULT_AMPLITUDE);
+
+                        if(recognition.performVerification(yolo.getCroppedEar())){
+                            String similarity = String.format("%.4f", recognition.getSimilarityAchieved());
+                            // performed verification
+                            if(recognition.isVerificationSuccess()) {
+                                verifTitle.setText("Success (" + similarity + ")");
+                                verifTitle.setTextColor(getColor(R.color.success));
+
+                                // this is the only type of the vibration which requires system version Oreo (API 26)
+                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                    vibrator.cancel();
+                                    vibrator.vibrate(vibrationEffect);
+                                }
+                            }
+                            else {
+                                verifTitle.setText("Failed (" + similarity + ")");
+                                verifTitle.setTextColor(getColor(R.color.failure));
+                            }
+                        } else {
+                            verifTitle.setText("No registered identity");
+                            verifTitle.setTextColor(getColor(R.color.failure));
+                        }
+                        yoloBtn.setText("Retry");
+                        yoloBtn.setVisibility(View.VISIBLE);
                     }
                 });
             }
@@ -202,39 +217,6 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
         }
         else
             return frame;
-    }
-
-    public void onTryButtonClick(View button){
-        final Vibrator vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
-        final VibrationEffect vibrationEffect = VibrationEffect.createOneShot(1000, VibrationEffect.DEFAULT_AMPLITUDE);
-
-        if(yolo.isEarDetected()){
-            handler.post(new Runnable() {
-                @Override
-                public void run() {
-                    if(recognition.performVerification(yolo.getCroppedEar())){
-                        // performed verification
-                        if(recognition.isVerificationSuccess()) {
-                            verifTitle.setText("Success, " + recognition.getSimilarityAchieved());
-                            verifTitle.setTextColor(getColor(R.color.success));
-
-                            // this is the only type of the vibration which requires system version Oreo (API 26)
-                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                                vibrator.cancel();
-                                vibrator.vibrate(vibrationEffect);
-                            }
-
-                        }
-                        else {
-                            verifTitle.setText("Failed, " + recognition.getSimilarityAchieved());
-                            verifTitle.setTextColor(getColor(R.color.failure));
-                        }
-                    } else {
-
-                    }
-                }
-            });
-        }
     }
 
     @Override

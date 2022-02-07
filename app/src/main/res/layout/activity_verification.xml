@@ -21,10 +21,16 @@
 
     <Button
         android:id="@+id/button2"
-        android:layout_width="wrap_content"
+        android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_marginBottom="60dp"
-        android:text="Yolo"
+        android:layout_marginEnd="24dp"
+        android:layout_marginStart="24dp"
+        android:onClick="activateYolo"
+        android:paddingBottom="24dp"
+        android:paddingTop="24dp"
+        android:text="Try"
+        android:textSize="24sp"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintHorizontal_bias="0.498"
@@ -36,23 +42,12 @@
         android:layout_height="wrap_content"
         android:text="Verification"
         android:textColor="#FFFFFF"
+        android:textSize="20sp"
         android:textStyle="bold"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="@+id/CameraView"
         app:layout_constraintVertical_bias="0.01999998" />
-
-    <Button
-        android:id="@+id/button"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:onClick="onTryButtonClick"
-        android:text="Try"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintHorizontal_bias="0.498"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@+id/titleVerification" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>
