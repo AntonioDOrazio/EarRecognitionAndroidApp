@@ -1,18 +1,14 @@
 package com.biometricssystems.earrecognition;
 
-import androidx.annotation.NonNull;
-import androidx.appcompat.app.AppCompatActivity;
-
 import android.Manifest;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
-import android.content.res.Resources;
 import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
-import android.graphics.Color;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
 import android.util.Log;
 import android.view.SurfaceView;
 import android.view.View;
@@ -20,50 +16,24 @@ import android.widget.Button;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import com.biometricssystems.earrecognition.ml.Model;
+import androidx.annotation.NonNull;
+import androidx.appcompat.app.AppCompatActivity;
+
 import com.biometricssystems.earrecognition.models.EarRecognition;
 import com.biometricssystems.earrecognition.models.YoloDetection;
 
-import org.apache.commons.math3.linear.RealMatrix;
-import org.apache.commons.math3.stat.correlation.PearsonsCorrelation;
-import org.apache.commons.math3.util.MathArrays;
-import org.apache.commons.math3.util.MathUtils;
-import org.opencv.android.BaseLoaderCallback;
 import org.opencv.android.CameraBridgeViewBase;
 import org.opencv.android.JavaCameraView;
 import org.opencv.android.OpenCVLoader;
 import org.opencv.android.Utils;
 import org.opencv.core.Core;
 import org.opencv.core.Mat;
-import org.opencv.core.MatOfByte;
-import org.opencv.core.MatOfDouble;
-import org.opencv.core.MatOfFloat;
-import org.opencv.core.MatOfInt;
 import org.opencv.core.MatOfPoint;
-import org.opencv.core.MatOfRect2d;
-import org.opencv.core.Point;
-import org.opencv.core.Rect;
-import org.opencv.core.Rect2d;
-import org.opencv.core.Scalar;
 import org.opencv.core.Size;
-import org.opencv.dnn.Net;
 import org.opencv.imgproc.Imgproc;
-import org.opencv.dnn.Dnn;
-import org.opencv.utils.Converters;
-import org.tensorflow.lite.DataType;
-import org.tensorflow.lite.support.common.ops.NormalizeOp;
-import org.tensorflow.lite.support.image.ImageProcessor;
-import org.tensorflow.lite.support.image.TensorImage;
-import org.tensorflow.lite.support.image.ops.ResizeOp;
 
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.charset.Charset;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
-import java.util.Locale;
 
 public class VerificationActivity extends AppCompatActivity implements CameraBridgeViewBase.CvCameraViewListener2 {
 
@@ -191,6 +161,7 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
         verifTitle = findViewById(R.id.titleVerification);
 
         yoloBtn.setOnClickListener(this::Yolo);
+        yoloBtn.performClick();
         recognition = new EarRecognition(this, getSharedPreferences(getString(R.string.app_name), Context.MODE_PRIVATE));
 
         frozenCapture = false;
@@ -234,6 +205,9 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
     }
 
     public void onTryButtonClick(View button){
+        final Vibrator vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+        final VibrationEffect vibrationEffect = VibrationEffect.createOneShot(1000, VibrationEffect.DEFAULT_AMPLITUDE);
+
         if(yolo.isEarDetected()){
             handler.post(new Runnable() {
                 @Override
@@ -243,6 +217,13 @@ public class VerificationActivity extends AppCompatActivity implements CameraBri
                         if(recognition.isVerificationSuccess()) {
                             verifTitle.setText("Success, " + recognition.getSimilarityAchieved());
                             verifTitle.setTextColor(getColor(R.color.success));
+
+                            // this is the only type of the vibration which requires system version Oreo (API 26)
+                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                vibrator.cancel();
+                                vibrator.vibrate(vibrationEffect);
+                            }
+
                         }
                         else {
                             verifTitle.setText("Failed, " + recognition.getSimilarityAchieved());
